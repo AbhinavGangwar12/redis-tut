@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  redis-master:
+    image: redis/redis-stack-server:latest
+    container_name: redis-master
+    ports:
+      - "6379:6379"
+    # Mount your custom config file
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+
+  redis-replica:
+    image: redis/redis-stack-server:latest
+    container_name: redis-replica
+    ports:
+      - "6380:6379" # Expose replica on port 6380
+    depends_on:
+      - redis-master
+    # Tell this container to replicate the master
+    command: redis-server --replicaof redis-master 6379
