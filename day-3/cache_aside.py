@@ -21,8 +21,8 @@ def jittered_ttl(base):
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 POSITIVE_TTL = 60
 NEGATIVE_TTL = 15
-SESSION_TTL = 5
-SESSION_MAX_AGE = 12
+SESSION_TTL = 1800
+SESSION_MAX_AGE = 86400
 
 def counted_db_product(pid):
     r.incr("stats:db:reads")
@@ -31,16 +31,21 @@ def counted_db_product(pid):
 def get_product(pid):
     key = f"cache:product:{pid}"
     cached = r.get(key)
+    status = None 
     if cached is not None:
         r.incr("stats:cache:hits")
-        return json.loads(cached)
+        status = "HIT"
+        return json.loads(cached), status 
     r.incr("stats:cache:misses")
     product = counted_db_product(pid)
     if product:
+        status = "MISS"
         r.set(key, json.dumps(product), ex=jittered_ttl(POSITIVE_TTL))
     else:
+        status = None 
         r.set(key, "null", ex=NEGATIVE_TTL)
-    return product
+
+    return product, status
 
 def get_product_safe(pid):
     key = f"cache:product:{pid}"
@@ -115,7 +120,7 @@ def get_session(token:str) -> dict | None:
     if not data:
         return None 
     remaining = SESSION_MAX_AGE - (int(time.time() - int(data["created_at"])))
-    if remaining < 0:
+    if remaining <= 0:
         r.delete(key)
         return None 
     r.expire(key, min(remaining, SESSION_TTL))
