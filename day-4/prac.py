@@ -78,9 +78,7 @@ def withdraw_lua(key: str, amount: int) -> bool:
     """
 
     lua_script = r.register_script(script)
-    if r.exists(key):
-        return lua_script(keys=[key], args=[amount]) == 1
-    return False
+    return lua_script(keys=[key], args=[amount]) == 1
 
 def fixed_window_allow(client: str, limit: int, window: int) -> tuple[bool, int]:
     bucket = int(time.time()) // window
@@ -137,7 +135,7 @@ def sliding_window_info(client: str, limit: int, window_seconds: int) -> dict:
     if count < limit then
         redis.call('ZADD', key, now, member)
         redis.call('PEXPIRE', key, window)
-        return { 1 , limit - count , 0 }
+        return { 1 , limit - count - 1 , 0 }
     end
     local res = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
     local oldest = tonumber(res[2])
@@ -149,44 +147,44 @@ def sliding_window_info(client: str, limit: int, window_seconds: int) -> dict:
     return {"allowed": bool(allowed), "remaining": remaining, "retry_after_ms": retry}
 
 if __name__ == '__main__':
-    # r.set("race:stock", 1000); run_threads(unsafe_decrement); print(r.get("race:stock"))
-    # r.set("race:stock", 1000); run_threads(safe_decrement); print(r.get("race:stock"))
+    r.set("race:stock", 1000); run_threads(unsafe_decrement); print(r.get("race:stock"))
+    r.set("race:stock", 1000); run_threads(safe_decrement); print(r.get("race:stock"))
 
-    # r.delete("lock:demo")
-    # a = acquire_lock("demo", ttl=10)
-    # print(bool(a))
-    # print(acquire_lock("demo"))
-    # print(0 < r.ttl("lock:demo") <= 10)
-    # print(release_lock("demo", "wrong-token"))
-    # print(release_lock("demo", a))
-    # print(r.exists("lock:demo"))
+    r.delete("lock:demo")
+    a = acquire_lock("demo", ttl=10)
+    print(bool(a))
+    print(acquire_lock("demo"))
+    print(0 < r.ttl("lock:demo") <= 10)
+    print(release_lock("demo", "wrong-token"))
+    print(release_lock("demo", a))
+    print(r.exists("lock:demo"))
 
-    # fn = withdraw_watch
-    # r.set("acct:t", 100)
-    # with ThreadPoolExecutor(max_workers=20) as pool:
-    #     results = list(pool.map(lambda _: fn("acct:t", 10), range(20)))
-    # print(results.count(True), r.get("acct:t"))
-    # r.set("acct:t", 5); print(fn("acct:t", 10), r.get("acct:t"))
-    # r.delete("acct:t"); print(fn("acct:t", 10))
+    fn = withdraw_watch
+    r.set("acct:t", 100)
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        results = list(pool.map(lambda _: fn("acct:t", 10), range(20)))
+    print(results.count(True), r.get("acct:t"))
+    r.set("acct:t", 5); print(fn("acct:t", 10), r.get("acct:t"))
+    r.delete("acct:t"); print(fn("acct:t", 10))
 
-    # time.sleep(10 - time.time() % 10)
-    # out = [fixed_window_allow("u1", 5, 10) for _ in range(7)]
-    # print([a for a, _ in out]); print([rem for _, rem in out])
-    # key = f"rl:fw:u1:{int(time.time()) // 10}"
-    # print(0 < r.ttl(key) <= 10)
+    time.sleep(10 - time.time() % 10)
+    out = [fixed_window_allow("u1", 5, 10) for _ in range(7)]
+    print([a for a, _ in out]); print([rem for _, rem in out])
+    key = f"rl:fw:u1:{int(time.time()) // 10}"
+    print(0 < r.ttl(key) <= 10)
 
 
-    # r.delete("rl:sw:u1")
-    # print([sliding_window_allow("u1", 3, 2) for _ in range(5)])
-    # time.sleep(2.1)
-    # print(sliding_window_allow("u1", 3, 2))
-    # print(0 < r.pttl("rl:sw:u1") <= 2000)
+    r.delete("rl:sw:u1")
+    print([sliding_window_allow("u1", 3, 2) for _ in range(5)])
+    time.sleep(2.1)
+    print(sliding_window_allow("u1", 3, 2))
+    print(0 < r.pttl("rl:sw:u1") <= 2000)
 
-    # for name, fn in (("unsafe", sliding_window_unsafe), ("lua", sliding_window_allow)):
-    #     r.delete("rl:sw:race")
-    #     with ThreadPoolExecutor(max_workers=50) as pool:
-    #         results = list(pool.map(lambda _: fn("race", 10, 5), range(50)))
-    #     print(name, results.count(True))
+    for name, fn in (("unsafe", sliding_window_unsafe), ("lua", sliding_window_allow)):
+        r.delete("rl:sw:race")
+        with ThreadPoolExecutor(max_workers=50) as pool:
+            results = list(pool.map(lambda _: fn("race", 10, 5), range(50)))
+        print(name, results.count(True))
 
 
     r.delete("rl:sw:u2")
