@@ -1,11 +1,16 @@
 import redis 
 import json
 import uuid
+import time
 import hashlib, re
 import numpy as np
 from redis.commands.search.field import TextField, TagField, VectorField 
 from redis.commands.search.index_definition import IndexDefinition , IndexType
 from redis.commands.search.query import Query
+from langchain_redis import RedisConfig, RedisVectorStore
+from redisvl.query.filter import Tag
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.documents import Document
 from embed import embed 
 
 rb = redis.Redis(host="localhost", port=6379)
@@ -121,6 +126,80 @@ def exact_cache_get(question: str, scope: str = "all") -> str | None:
         return answer
     return None
 
+def create_cache_index() -> None:
+    try:
+        rb.ft("idx:cache").dropindex(delete_documents=True)
+    except redis.ResponseError:
+        pass 
+
+    schema = (
+        TextField("question"),
+        TextField("answer"),
+        TagField("category"),
+        VectorField("embedding", "FLAT", {
+            "TYPE" : "FLOAT32",
+            "DIM" : 384,
+            "DISTANCE_METRIC" : "COSINE"
+        })
+    )
+    rb.ft("idx:cache").create_index(schema, definition=IndexDefinition(prefix=["cache:sem:"], index_type=IndexType.HASH))
+
+def semantic_cache_store(question: str, answer: str, category: str = "all", ttl: int = 300) -> None:
+    encoded = embed(question).tobytes()
+    key = f"cache:sem:{uuid.uuid4().hex}"
+    pipe = r.pipeline()
+    pipe.hset(key, mapping={"question" : question, "answer" : answer, "category" : category, "embedding" : encoded})
+    pipe.expire(key, ttl)
+    pipe.execute()
+
+def semantic_cache_lookup(question: str, category: str = "all", threshold: float = 0.2) -> tuple[str, float] | None:
+    query = (Query(build_query(k=1, category=category))
+            .sort_by("dist")
+            .return_fields("question", "answer", "category", "dist")
+            .dialect(2)
+            )
+    res = rb.ft("idx:cache").search(query=query, query_params={"vec" : embed(question).tobytes()})
+    if not res.docs:
+        return None
+    if float(res.docs[0].dist) <= threshold:
+        return (res.docs[0].answer, float(res.docs[0].dist))
+    return None 
+
+def get_lc_store() -> RedisVectorStore:
+    """Helper to initialize the LangChain Redis Vector Store consistently."""
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    config = RedisConfig(
+        index_name="idx:lc", 
+        redis_url="redis://localhost:6379", 
+        key_prefix="lc",
+        metadata_schema=[{"name": "category", "type": "tag"}]
+    )
+    return RedisVectorStore(embeddings, config=config)
+
+def build_lc_store() -> None:
+    try:
+        r.ft("idx:lc").dropindex(delete_documents=True)
+    except redis.ResponseError:
+        pass 
+
+    store = get_lc_store()
+    documents = [
+        Document(page_content=title, metadata={"category": category})
+        for title, category in DOCS 
+    ]
+
+    store.add_documents(documents=documents)
+
+def lc_search(question: str, category: str | None = None, k: int = 3) -> list[tuple[str, float]]:
+    store = get_lc_store()
+    if category:
+        results = store.similarity_search_with_score(question, k=k, filter={"category": category})
+    else:
+        results = store.similarity_search_with_score(question, k=k)
+    
+    return [(doc.page_content, float(score)) for doc, score in results]
+
+
 if __name__ == "__main__":
     # create_index()
     # add_docs()
@@ -156,11 +235,29 @@ if __name__ == "__main__":
     # print(hybrid_search("how do I get my money back", "pizza"))
     # print(hybrid_search("how do I get my money back", "unicorn"))
 
-    for k in r.scan_iter("cache:exact:*"):
-        r.delete(k)
-    exact_cache_set("How do I reset my password?", "ANS1")
-    print(exact_cache_get("  how do I   reset my password "))
-    print(exact_cache_get("How can I reset my password"))
-    print(exact_cache_get("How do I reset my password?", scope="billing"))
-    key = exact_key("How do I reset my password?")
-    print(0 < r.ttl(key) <= 300)
+    # for k in r.scan_iter("cache:exact:*"):
+    #     r.delete(k)
+    # exact_cache_set("How do I reset my password?", "ANS1")
+    # print(exact_cache_get("  how do I   reset my password "))
+    # print(exact_cache_get("How can I reset my password"))
+    # print(exact_cache_get("How do I reset my password?", scope="billing"))
+    # key = exact_key("How do I reset my password?")
+    # print(0 < r.ttl(key) <= 300)
+
+    # create_cache_index()
+    # semantic_cache_store("How do I reset my password?", "ANS1")
+    # hit = semantic_cache_lookup("how can I reset my password")
+    # print(hit[0], hit[1] <= 0.2)
+    # print(semantic_cache_lookup("What is the refund policy?"))
+    # semantic_cache_store("How do I change my card?", "ANS2", category="billing")
+    # print(semantic_cache_lookup("How do I change my card?", category="account"))
+    # print(semantic_cache_lookup("How do I change my card?", category="billing")[0])
+    # semantic_cache_store("Short lived question", "TMP", ttl=1)
+    # time.sleep(1.5)
+    # print(semantic_cache_lookup("Short lived question"))
+    # print([0 < rb.ttl(k) <= 300 for k in rb.scan_iter("cache:sem:*")].count(False))
+    build_lc_store()
+    print(lc_search("how do I get my money back", k=1)[0][0])
+    print(all(t in ("How to reset a forgotten password", "Two-factor authentication setup guide")
+              for t, _ in lc_search("I can't log in", category="account", k=3)))
+    print(round(lc_search("Best pizza toppings in Italy", k=1)[0][1], 1))
