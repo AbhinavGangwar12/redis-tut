@@ -12,9 +12,11 @@ from redisvl.query.filter import Tag
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from embed import embed 
+from sample_docs import SAMPLE_DOCS
 
 rb = redis.Redis(host="localhost", port=6379)
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+lc_embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 def create_index():
     try:
@@ -147,7 +149,7 @@ def create_cache_index() -> None:
 def semantic_cache_store(question: str, answer: str, category: str = "all", ttl: int = 300) -> None:
     encoded = embed(question).tobytes()
     key = f"cache:sem:{uuid.uuid4().hex}"
-    pipe = r.pipeline()
+    pipe = rb.pipeline()
     pipe.hset(key, mapping={"question" : question, "answer" : answer, "category" : category, "embedding" : encoded})
     pipe.expire(key, ttl)
     pipe.execute()
@@ -162,19 +164,21 @@ def semantic_cache_lookup(question: str, category: str = "all", threshold: float
     if not res.docs:
         return None
     if float(res.docs[0].dist) <= threshold:
+        ans = res.docs[0].answer
+        if isinstance(ans, bytes):
+            ans = ans.decode("utf-8")
         return (res.docs[0].answer, float(res.docs[0].dist))
     return None 
 
 def get_lc_store() -> RedisVectorStore:
     """Helper to initialize the LangChain Redis Vector Store consistently."""
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     config = RedisConfig(
         index_name="idx:lc", 
         redis_url="redis://localhost:6379", 
         key_prefix="lc",
         metadata_schema=[{"name": "category", "type": "tag"}]
     )
-    return RedisVectorStore(embeddings, config=config)
+    return RedisVectorStore(lc_embeddings, config=config)
 
 def build_lc_store() -> None:
     try:
@@ -184,8 +188,8 @@ def build_lc_store() -> None:
 
     store = get_lc_store()
     documents = [
-        Document(page_content=title, metadata={"category": category})
-        for title, category in DOCS 
+        Document(page_content=doc["text"], metadata={"category": doc["category"], "id" : doc["id"]})
+        for doc in SAMPLE_DOCS 
     ]
 
     store.add_documents(documents=documents)
@@ -193,11 +197,11 @@ def build_lc_store() -> None:
 def lc_search(question: str, category: str | None = None, k: int = 3) -> list[tuple[str, float]]:
     store = get_lc_store()
     if category:
-        results = store.similarity_search_with_score(question, k=k, filter={"category": category})
+        results = store.similarity_search_with_score(question, k=k, filter=Tag("category") == category)
     else:
         results = store.similarity_search_with_score(question, k=k)
     
-    return [(doc.page_content, float(score)) for doc, score in results]
+    return [(doc.page_content, float(score), doc.metadata.get("id", "")) for doc, score in results]
 
 
 if __name__ == "__main__":
@@ -256,8 +260,9 @@ if __name__ == "__main__":
     # time.sleep(1.5)
     # print(semantic_cache_lookup("Short lived question"))
     # print([0 < rb.ttl(k) <= 300 for k in rb.scan_iter("cache:sem:*")].count(False))
-    build_lc_store()
-    print(lc_search("how do I get my money back", k=1)[0][0])
-    print(all(t in ("How to reset a forgotten password", "Two-factor authentication setup guide")
-              for t, _ in lc_search("I can't log in", category="account", k=3)))
-    print(round(lc_search("Best pizza toppings in Italy", k=1)[0][1], 1))
+    # build_lc_store()
+    # print(lc_search("how do I get my money back", k=1)[0][0])
+    # print(all(t in ("How to reset a forgotten password", "Two-factor authentication setup guide")
+    #           for t, _ in lc_search("I can't log in", category="account", k=3)))
+    # print(round(lc_search("Best pizza toppings in Italy", k=1)[0][1], 1))
+    pass
