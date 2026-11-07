@@ -15,7 +15,7 @@ def plan(state: State):
     return {"log" : [f"planned:{state['task']}"]}
 
 def work(state: State):
-    if r.get("lab:crash") == "1":
+    if re.get("lab:crash") == "1":
         raise RuntimeError("simulated crash in work")
     return {"log" : ["worked"]}
 
